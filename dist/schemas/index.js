@@ -47,9 +47,9 @@ exports.SchemaRegistry = void 0;
 __exportStar(require("./common/base-types"), exports);
 __exportStar(require("./common/schema-helpers"), exports);
 // Model schemas
-__exportStar(require("./models/task.schema"), exports);
-// API schemas
-__exportStar(require("./api/task-api.schema"), exports);
+// export * from './models/task.schema';
+// // API schemas
+// export * from './api/task-api.schema';
 /**
  * Schema Registry
  *
@@ -57,17 +57,11 @@ __exportStar(require("./api/task-api.schema"), exports);
  * It can be useful for documentation and testing purposes
  */
 const baseTypes = __importStar(require("./common/base-types"));
-const taskSchema = __importStar(require("./models/task.schema"));
-const taskApiSchema = __importStar(require("./api/task-api.schema"));
+// import * as taskSchema from './models/task.schema';
+// import * as taskApiSchema from './api/task-api.schema';
 exports.SchemaRegistry = {
     common: {
         ...baseTypes,
-    },
-    models: {
-        task: taskSchema,
-    },
-    api: {
-        task: taskApiSchema,
     },
 };
 //# sourceMappingURL=index.js.map

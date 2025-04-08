@@ -6,10 +6,6 @@
  */
 export * from './common/base-types';
 export * from './common/schema-helpers';
-export * from './models/task.schema';
-export * from './api/task-api.schema';
-import * as taskSchema from './models/task.schema';
-import * as taskApiSchema from './api/task-api.schema';
 export declare const SchemaRegistry: {
     common: {
         idSchema: import("zod").ZodString;
@@ -19,11 +15,5 @@ export declare const SchemaRegistry: {
         positiveNumber: import("zod").ZodNumber;
         urlSchema: import("zod").ZodString;
         statusSchema: import("zod").ZodEnum<["active", "inactive", "pending"]>;
-    };
-    models: {
-        task: typeof taskSchema;
-    };
-    api: {
-        task: typeof taskApiSchema;
     };
 };

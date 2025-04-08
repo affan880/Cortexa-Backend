@@ -10,10 +10,10 @@ export * from './common/base-types';
 export * from './common/schema-helpers';
 
 // Model schemas
-export * from './models/task.schema';
+// export * from './models/task.schema';
 
-// API schemas
-export * from './api/task-api.schema';
+// // API schemas
+// export * from './api/task-api.schema';
 
 /**
  * Schema Registry
@@ -22,17 +22,11 @@ export * from './api/task-api.schema';
  * It can be useful for documentation and testing purposes
  */
 import * as baseTypes from './common/base-types';
-import * as taskSchema from './models/task.schema';
-import * as taskApiSchema from './api/task-api.schema';
+// import * as taskSchema from './models/task.schema';
+// import * as taskApiSchema from './api/task-api.schema';
 
 export const SchemaRegistry = {
   common: {
     ...baseTypes,
-  },
-  models: {
-    task: taskSchema,
-  },
-  api: {
-    task: taskApiSchema,
   },
 }; 
