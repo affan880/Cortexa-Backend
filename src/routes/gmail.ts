@@ -125,6 +125,32 @@ function base64UrlDecode(str: string): string {
     }
 }
 
+// Helper function to extract HTML from email body
+function getHtmlBody(payload: any): string {
+    if (!payload) return '';
+
+    // If the payload itself is HTML
+    if (payload.mimeType === 'text/html' && payload.body?.data) {
+        return base64UrlDecode(payload.body.data);
+    }
+
+    // If payload has parts, search for HTML part
+    if (payload.parts) {
+        for (const part of payload.parts) {
+            if (part.mimeType === 'text/html' && part.body?.data) {
+                return base64UrlDecode(part.body.data);
+            }
+            // Check nested parts
+            if (part.parts) {
+                const nestedHtml = getHtmlBody(part);
+                if (nestedHtml) return nestedHtml;
+            }
+        }
+    }
+
+    return '';
+}
+
 // Helper function to extract plain text from email body
 function getPlainTextBody(payload: any): string {
     let body = '';
@@ -702,8 +728,8 @@ router.post('/messages/batch', async (req: Request, res: Response) => {
                     const cc = headers.find(h => h.name === 'Cc')?.value || '';
                     const date = headers.find(h => h.name === 'Date')?.value || '';
                     
-                    // Process raw email body
-                    const body = getPlainTextBody(messageData.payload) || messageData.snippet || '';
+                    // Get HTML body instead of plain text
+                    const body = getHtmlBody(messageData.payload) || messageData.snippet || '';
                     
                     // Check if message is unread
                     const isUnread = messageData.labelIds?.includes('UNREAD') || false;

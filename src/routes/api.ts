@@ -836,4 +836,77 @@ ${emailBody}
   }
 });
 
+// --- Generate Email Endpoint ---
+router.post('/generate-email', async (req, res) => {
+  console.log("--- Reached POST /generate-email handler ---");
+  
+  try {
+    // Extract data from request body
+    const { 
+      subject, 
+      body, 
+      recipientEmail, 
+      tone = 'professional' // Default tone
+    } = req.body;
+    
+    // Initialize Ollama client for Mistral
+    const ollamaHost = "http://192.168.1.79:11434"; 
+    const ollamaModel = "mistral";
+    console.log(`Initializing Ollama model ${ollamaModel} at ${ollamaHost}...`);
+    const ollama = new ChatOllama({ baseUrl: ollamaHost, model: ollamaModel, temperature: 0.7 });
+
+    // Create the prompt for email generation
+    const emailPrompt = `
+Generate a professional email with the following parameters:
+${subject ? `Subject: ${subject}\n` : ''}
+${recipientEmail ? `Recipient: ${recipientEmail}\n` : ''}
+${body ? `Context/Key Points to include:\n${body}\n` : ''}
+Tone: ${tone}
+
+Please generate:
+1. A clear and concise subject line (if not provided)
+2. A well-structured email body
+3. Appropriate greeting and closing
+4. Maintain the specified tone throughout
+5. Include all necessary information from the context
+6. Keep it professional and engaging
+
+Format the response as a JSON object with 'subject' and 'body' fields.
+    `;
+
+    console.log("Sending request to Mistral for email generation...");
+    const response = await ollama.invoke(emailPrompt);
+    const generatedEmail = response.content.toString().trim();
+    
+    // Parse the response to ensure it's valid JSON
+    let emailContent;
+    try {
+      emailContent = JSON.parse(generatedEmail);
+    } catch (parseError) {
+      // If parsing fails, create a structured response from the raw text
+      const lines = generatedEmail.split('\n');
+      emailContent = {
+        subject: lines[0].replace('Subject:', '').trim(),
+        body: lines.slice(1).join('\n').trim()
+      };
+    }
+    
+    console.log("Email generated successfully.");
+    
+    // Return the generated email
+    res.json({ 
+      subject: emailContent.subject,
+      body: emailContent.body,
+      raw: generatedEmail // Include raw response for debugging
+    });
+    
+  } catch (error: any) {
+    console.error("Error in /generate-email endpoint:", error);
+    res.status(500).json({ 
+      error: 'Failed to generate email', 
+      details: error.message || 'Unknown error' 
+    });
+  }
+});
+
 export default router; 
