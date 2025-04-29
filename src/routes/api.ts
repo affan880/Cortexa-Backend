@@ -4,7 +4,9 @@ import { runGmailAgent } from '../agents/gmailAgent';
 import { google } from "googleapis";
 import { OAuth2Client } from "google-auth-library";
 import { ChatOllama } from "@langchain/community/chat_models/ollama";
+import { ChatOpenAI } from "@langchain/openai";
 import { Buffer } from 'buffer'; // Needed for base64 decoding
+import compression from 'compression';
 
 console.log("--- Loading src/routes/api.ts ---");
 
@@ -28,6 +30,9 @@ const ALLOWED_INTENT_TYPES = [
 ];
 
 const router = Router();
+
+// Add compression middleware
+router.use(compression());
 
 // Common handler logic
 const handleRequest = async (req: Request, res: Response, next: NextFunction, taskPromptTemplate: (threadId: string) => string) => {
@@ -251,6 +256,13 @@ function getAttachmentInfo(payload: any): { filename: string; mime_type: string 
     parts.forEach(findAttachmentsRecursive);
 
     return attachments;
+}
+
+// Define types for email structure
+interface EmailContent {
+  subject: string;
+  body: string;
+  timestamp?: string;
 }
 
 // --- API Endpoints --- 
@@ -691,37 +703,37 @@ router.post('/detect-intent', async (req, res) => {
 
     // 7. Create the *structured* prompt
     const intentPrompt = `
-You are an AI assistant analyzing emails to help a user quickly understand their purpose and identify required actions for task management. Your goal is to provide a structured summary containing the email's category and a list of structured actions.
+    You are an AI assistant analyzing emails to help a user quickly understand their purpose and identify required actions for task management. Your goal is to provide a structured summary containing the email's category and a list of structured actions.
 
-**Instructions:**
+    **Instructions:**
 
-1.  Analyze the **Email Context** provided below.
-2.  Determine the primary **\`category\`**. Choose the *single best fit* from this list: ${ALLOWED_CATEGORIES.map(c => `\`${c}\``).join(', ')}.
-3.  Identify all distinct and actionable items or key information points. For each, create a JSON object with the following keys:
-    * **\`intent_type\`**: Classify the action. Choose the *single best fit* from: ${ALLOWED_INTENT_TYPES.map(i => `\`${i}\``).join(', ')}. Use \`unknown\` if unsure or if it's just informational but worth noting.
-    * **\`description\`**: A concise, human-readable summary of the action or information point (e.g., "Reply with availability by Friday", "Review attached Q3 report", "Meeting scheduled for Tuesday at 10 AM"). Start actions with a verb.
-    * **\`details\`**: An optional JSON object containing structured data relevant to the intent. Provide details *only if clearly present* in the email. Possible keys include:
-        * For \`create_task\`: \`suggested_title\` (string), \`due_date_hint\` (string, e.g., "Tomorrow", "2025-10-25")
-        * For \`draft_reply_email\`: \`topic\` (string), \`deadline\` (string), \`recipient_hint\` (string)
-        * For \`schedule_event\`: \`event_title\` (string), \`date_time_text\` (string, e.g., "next Tuesday at 3pm"), \`date_time_iso\` (string, ISO 8601 if possible), \`location_hint\` (string)
-        * For \`open_link\`: \`url\` (string), \`link_description\` (string)
-        * For \`review_document\`: \`document_hint\` (string, e.g., "attached PDF", "report"), \`deadline\` (string)
-        * (No specific details needed for \`archive_email\` or \`unknown\`)
-4.  If no specific actions or key information points are found, return an empty list for \`structured_actions\`.
-5.  Respond *only* with a single, valid JSON object containing exactly two keys: \`category\` (string) and \`structured_actions\` (a list of the JSON objects described above). Do not add explanations, greetings, or any text outside the JSON structure.
+    1.  Analyze the **Email Context** provided below.
+    2.  Determine the primary **\`category\`**. Choose the *single best fit* from this list: ${ALLOWED_CATEGORIES.map(c => `\`${c}\``).join(', ')}.
+    3.  Identify all distinct and actionable items or key information points. For each, create a JSON object with the following keys:
+        * **\`intent_type\`**: Classify the action. Choose the *single best fit* from: ${ALLOWED_INTENT_TYPES.map(i => `\`${i}\``).join(', ')}. Use \`unknown\` if unsure or if it's just informational but worth noting.
+        * **\`description\`**: A concise, human-readable summary of the action or information point (e.g., "Reply with availability by Friday", "Review attached Q3 report", "Meeting scheduled for Tuesday at 10 AM"). Start actions with a verb.
+        * **\`details\`**: An optional JSON object containing structured data relevant to the intent. Provide details *only if clearly present* in the email. Possible keys include:
+            * For \`create_task\`: \`suggested_title\` (string), \`due_date_hint\` (string, e.g., "Tomorrow", "2025-10-25")
+            * For \`draft_reply_email\`: \`topic\` (string), \`deadline\` (string), \`recipient_hint\` (string)
+            * For \`schedule_event\`: \`event_title\` (string), \`date_time_text\` (string, e.g., "next Tuesday at 3pm"), \`date_time_iso\` (string, ISO 8601 if possible), \`location_hint\` (string)
+            * For \`open_link\`: \`url\` (string), \`link_description\` (string)
+            * For \`review_document\`: \`document_hint\` (string, e.g., "attached PDF", "report"), \`deadline\` (string)
+            * (No specific details needed for \`archive_email\` or \`unknown\`)
+    4.  If no specific actions or key information points are found, return an empty list for \`structured_actions\`.
+    5.  Respond *only* with a single, valid JSON object containing exactly two keys: \`category\` (string) and \`structured_actions\` (a list of the JSON objects described above). Do not add explanations, greetings, or any text outside the JSON structure.
 
-**Email Context:**
----
-Sender: ${emailFrom}
-Subject: ${emailSubject}
-Date: ${emailDateReceived}
-Attachments: ${attachmentListString}
-Content:
-${emailBody}
----
+    **Email Context:**
+    ---
+    Sender: ${emailFrom}
+    Subject: ${emailSubject}
+    Date: ${emailDateReceived}
+    Attachments: ${attachmentListString}
+    Content:
+    ${emailBody}
+    ---
 
-**JSON Output:**
-`;
+    **JSON Output:**
+    `;
 
     // 8. Invoke Ollama
     console.log("Analyzing email for structured actions...");
@@ -857,51 +869,267 @@ router.post('/generate-email', async (req, res) => {
 
     // Create the prompt for email generation
     const emailPrompt = `
-Generate a professional email with the following parameters:
-${subject ? `Subject: ${subject}\n` : ''}
-${recipientEmail ? `Recipient: ${recipientEmail}\n` : ''}
-${body ? `Context/Key Points to include:\n${body}\n` : ''}
+    Generate a professional email with the following parameters:
+    ${subject ? `Subject: ${subject}\n` : ''}
+    ${recipientEmail ? `Recipient: ${recipientEmail}\n` : ''}
+    ${body ? `Context/Key Points to include:\n${body}\n` : ''}
+    Tone: ${tone}
+      
+    Please generate:
+    1. A clear and concise subject line (if not provided)
+    2. A well-structured email body
+    3. Appropriate greeting and closing
+    4. Maintain the specified tone throughout
+    5. Include all necessary information from the context
+    6. Keep it professional and engaging
+      
+    Format the response as a JSON object with 'subject' and 'body' fields.
+        `;
+      
+        console.log("Sending request to Mistral for email generation...");
+        const response = await ollama.invoke(emailPrompt);
+        const generatedEmail = response.content.toString().trim();
+        
+        // Parse the response to ensure it's valid JSON
+        let emailContent;
+        try {
+          emailContent = JSON.parse(generatedEmail);
+        } catch (parseError) {
+          // If parsing fails, create a structured response from the raw text
+          const lines = generatedEmail.split('\n');
+          emailContent = {
+            subject: lines[0].replace('Subject:', '').trim(),
+            body: lines.slice(1).join('\n').trim()
+          };
+        }
+        
+        console.log("Email generated successfully.");
+        
+        // Return the generated email
+        res.json({ 
+          subject: emailContent.subject,
+          body: emailContent.body,
+          raw: generatedEmail // Include raw response for debugging
+        });
+        
+      } catch (error: any) {
+        console.error("Error in /generate-email endpoint:", error);
+        res.status(500).json({ 
+          error: 'Failed to generate email', 
+          details: error.message || 'Unknown error' 
+        });
+      }
+    });
+
+// --- Generate Email with Revisions Endpoint ---
+router.post('/generate-email-with-revisions', async (req, res) => {
+  console.log("--- Reached POST /generate-email-with-revisions handler ---");
+  
+  // Set a longer timeout for this endpoint
+  req.setTimeout(300000); // 5 minutes timeout
+  res.setTimeout(300000); // 5 minutes timeout
+  
+  try {
+    // Extract data from request body
+    const { 
+      prompt,
+      tone = 'professional',
+      isRevision = false,
+      previousEmails = [] as EmailContent[],
+      revisionInstructions
+    } = req.body;
+    
+    console.log("Request body:", { prompt, tone, isRevision, previousEmailsLength: previousEmails.length, revisionInstructions });
+    
+    // Basic validation
+    if (!prompt && !isRevision) {
+      console.error("Missing prompt for initial email generation");
+      return res.status(400).json({ error: 'Missing prompt for initial email generation' });
+    }
+    
+    if (isRevision && (!previousEmails.length || !revisionInstructions)) {
+      console.error("Missing required fields for revision");
+      return res.status(400).json({ 
+        error: 'For revisions, both previousEmails array and revisionInstructions are required' 
+      });
+    }
+
+    // Set up SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*'); // Allow CORS
+    res.setHeader('X-Accel-Buffering', 'no'); // Disable proxy buffering
+
+    // Create appropriate prompt based on whether it's a revision or new email
+    const emailPrompt = isRevision ? `
+You are an AI assistant helping to revise an email. Here is the conversation history and the requested changes:
+
+Previous Emails:
+${previousEmails.map((email: EmailContent, index: number) => `
+Email ${index + 1}:
+Subject: ${email.subject}
+Body: ${email.body}
+Timestamp: ${email.timestamp || 'N/A'}
+`).join('\n')}
+
+Requested Changes:
+${revisionInstructions}
+
+Please revise the email while:
+1. Maintaining the core message and purpose
+2. Implementing the requested changes
+3. Keeping the same tone and style
+4. Preserving any important details
+5. Making the changes seamlessly integrated
+6. Considering the full conversation context
+
+IMPORTANT: Your response must be a valid JSON object with the following structure:
+{
+  "subject": "Revised subject line",
+  "body": "Revised email body",
+  "changes": "Brief description of changes made",
+  "conversationContext": "Brief summary of how this fits into the conversation"
+}
+
+Do not include any text outside of this JSON structure.
+    ` : `
+Generate a professional email based on the following prompt:
+${prompt}
+
 Tone: ${tone}
 
 Please generate:
-1. A clear and concise subject line (if not provided)
+1. A clear and concise subject line
 2. A well-structured email body
 3. Appropriate greeting and closing
 4. Maintain the specified tone throughout
-5. Include all necessary information from the context
+5. Include all necessary information
 6. Keep it professional and engaging
 
-Format the response as a JSON object with 'subject' and 'body' fields.
+IMPORTANT: Your response must be a valid JSON object with the following structure:
+{
+  "subject": "Email subject line",
+  "body": "Email body content"
+}
+
+Do not include any text outside of this JSON structure.
     `;
 
-    console.log("Sending request to Mistral for email generation...");
-    const response = await ollama.invoke(emailPrompt);
-    const generatedEmail = response.content.toString().trim();
-    
-    // Parse the response to ensure it's valid JSON
-    let emailContent;
-    try {
-      emailContent = JSON.parse(generatedEmail);
-    } catch (parseError) {
-      // If parsing fails, create a structured response from the raw text
-      const lines = generatedEmail.split('\n');
-      emailContent = {
-        subject: lines[0].replace('Subject:', '').trim(),
-        body: lines.slice(1).join('\n').trim()
-      };
-    }
-    
-    console.log("Email generated successfully.");
-    
-    // Return the generated email
-    res.json({ 
-      subject: emailContent.subject,
-      body: emailContent.body,
-      raw: generatedEmail // Include raw response for debugging
+    console.log("Generated prompt:", emailPrompt);
+
+    // Send initial event to establish connection
+    res.write('data: {"status": "starting"}\n\n');
+    console.log("Sent initial connection event");
+
+    // Initialize Ollama client
+    console.log(`Initializing Ollama model ${OLLAMA_MODEL} at ${OLLAMA_HOST}...`);
+    const ollama = new ChatOllama({ 
+      baseUrl: OLLAMA_HOST, 
+      model: OLLAMA_MODEL, 
+      temperature: 0.7
     });
-    
+
+    // Use a simpler streaming approach with timeout
+    try {
+      const response = await Promise.race([
+        ollama.invoke([
+          {
+            role: "user",
+            content: emailPrompt
+          }
+        ]),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Request timed out')), 60000)
+        )
+      ]) as { content: string };
+
+      const content = response.content.toString();
+      console.log("Received response:", content);
+
+      // Try to parse as JSON
+      let parsedResponse;
+      try {
+        // First, try to find JSON in the response
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            // Try parsing the raw JSON first
+            parsedResponse = JSON.parse(jsonMatch[0]);
+          } catch (parseError) {
+            console.warn('Failed to parse raw JSON:', parseError);
+            // If that fails, try cleaning the JSON string
+            const cleanedJson = jsonMatch[0]
+              .replace(/\n/g, '\\n')
+              .replace(/\r/g, '\\r')
+              .replace(/\t/g, '\\t')
+              .replace(/\\/g, '\\\\')
+              .replace(/"/g, '\\"')
+              .replace(/\u0000-\u001F/g, '');
+
+            try {
+              parsedResponse = JSON.parse(cleanedJson);
+            } catch (cleanParseError) {
+              console.warn('Failed to parse cleaned JSON:', cleanParseError);
+              // If both parsing attempts fail, try to extract fields directly
+              const subjectMatch = content.match(/"subject":\s*"([^"]+)"/);
+              const bodyMatch = content.match(/"body":\s*"([^"]+)"/);
+              
+              parsedResponse = {
+                subject: subjectMatch ? subjectMatch[1] : 'No Subject',
+                body: bodyMatch ? bodyMatch[1] : content
+              };
+            }
+          }
+        } else {
+          // If no JSON found, create structured response from text
+          const lines = content.split('\n').filter((line: string) => line.trim());
+          parsedResponse = {
+            subject: lines[0].replace(/^subject:?\s*/i, '').trim(),
+            body: lines.slice(1).join('\n').trim()
+          };
+        }
+      } catch (parseError) {
+        console.warn('Failed to parse response as JSON:', parseError);
+        // If all parsing attempts fail, create a structured response from the raw text
+        const lines = content.split('\n').filter((line: string) => line.trim());
+        parsedResponse = {
+          subject: lines[0].replace(/^subject:?\s*/i, '').trim(),
+          body: lines.slice(1).join('\n').trim()
+        };
+      }
+
+      // Clean up the response
+      if (parsedResponse.body) {
+        // Remove any markdown formatting
+        parsedResponse.body = parsedResponse.body
+          .replace(/```json/g, '')
+          .replace(/```/g, '')
+          .replace(/`/g, '')
+          .trim();
+      }
+
+      // Send the complete response
+      res.write(`data: ${JSON.stringify({ 
+        status: 'complete',
+        response: parsedResponse,
+        raw: content
+      })}\n\n`);
+
+    } catch (error: any) {
+      console.error('Error generating response:', error);
+      res.write(`data: ${JSON.stringify({ 
+        error: 'Failed to generate email', 
+        details: error.message || 'Unknown error' 
+      })}\n\n`);
+    }
+
+    // End the response
+    res.end();
+    console.log("Response completed");
+
   } catch (error: any) {
-    console.error("Error in /generate-email endpoint:", error);
+    console.error("Error in /generate-email-with-revisions endpoint:", error);
     res.status(500).json({ 
       error: 'Failed to generate email', 
       details: error.message || 'Unknown error' 
