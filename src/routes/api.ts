@@ -11,9 +11,11 @@ import compression from 'compression';
 console.log("--- Loading src/routes/api.ts ---");
 
 // --- Configuration --- 
-const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://192.168.1.79:11434"; // Replace with your Ollama host if different
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "mistral"; // Or another model like llama3
-const MAX_BODY_CHARS = 8000; // Increased limit for email body context
+const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://192.168.1.79:11434";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "mistral:latest";
+const MAX_BODY_CHARS = 8000;
+const OLLAMA_TIMEOUT = 180000;
+const OLLAMA_MAX_RETRIES = 3;
 
 // --- Allowed Categories and Intents --- 
 const ALLOWED_CATEGORIES = [
@@ -264,6 +266,122 @@ interface EmailContent {
   body: string;
   timestamp?: string;
 }
+
+// Helper function to check if Ollama is ready
+const checkOllamaHealth = async (): Promise<boolean> => {
+  try {
+    console.log('Checking Ollama health...');
+    const response = await fetch(`${OLLAMA_HOST}/api/tags`);
+    if (!response.ok) {
+      console.error(`Failed to get model list: ${response.statusText}`);
+      return false;
+    }
+    const data = await response.json();
+    const models = data.models || [];
+    console.log('Available models:', JSON.stringify(models, null, 2));
+    
+    // Check if our model is available (exact match including version)
+    const modelAvailable = models.some((m: any) => m.name === OLLAMA_MODEL || m.model === OLLAMA_MODEL);
+    if (!modelAvailable) {
+      console.error(`Model ${OLLAMA_MODEL} not found in available models:`, 
+        models.map((m: any) => m.name || m.model));
+      return false;
+    }
+    console.log(`Model ${OLLAMA_MODEL} is available`);
+    return true;
+  } catch (error) {
+    console.error('Ollama health check failed:', error);
+    return false;
+  }
+};
+
+// Helper function to create Ollama client
+const createOllamaClient = (temperature = 0.7) => {
+  return new ChatOllama({
+    baseUrl: OLLAMA_HOST,
+    model: OLLAMA_MODEL,
+    temperature,
+    maxRetries: OLLAMA_MAX_RETRIES,
+    format: "json"
+  });
+};
+
+// Helper function to call Ollama with direct API fallback
+const callOllamaWithTimeout = async (ollama: ChatOllama, prompt: string): Promise<{ content: string }> => {
+  // First check if Ollama is healthy
+  const isHealthy = await checkOllamaHealth();
+  if (!isHealthy) {
+    throw new Error(`Ollama service is not healthy or model ${OLLAMA_MODEL} is not available`);
+  }
+
+  let lastError: Error | null = null;
+  
+  for (let attempt = 1; attempt <= OLLAMA_MAX_RETRIES; attempt++) {
+    try {
+      console.log(`Attempt ${attempt} of ${OLLAMA_MAX_RETRIES} to call Ollama...`);
+      
+      // Try direct API call first
+      try {
+        console.log('Attempting direct API call...');
+        const response = await fetch(`${OLLAMA_HOST}/api/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: OLLAMA_MODEL,
+            prompt: prompt,
+            stream: false,
+            options: {
+              num_ctx: 2048,
+              num_thread: 4,
+              temperature: 0.7
+            }
+          })
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          console.log('Direct API call successful');
+          return { content: data.response };
+        } else {
+          const errorData = await response.text();
+          console.error('Direct API call failed:', response.status, errorData);
+          throw new Error(`API call failed: ${response.status} ${errorData}`);
+        }
+      } catch (directError) {
+        console.warn('Direct API call failed, falling back to LangChain:', directError);
+      }
+      
+      // Fallback to LangChain if direct call fails
+      const response = await Promise.race([
+        ollama.invoke(prompt),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error(`Ollama request timed out after ${OLLAMA_TIMEOUT/1000} seconds`)), OLLAMA_TIMEOUT)
+        )
+      ]) as { content: string };
+      
+      console.log(`Ollama request successful on attempt ${attempt}`);
+      return response;
+    } catch (error) {
+      lastError = error as Error;
+      console.error(`Attempt ${attempt} failed:`, error);
+      
+      // Check Ollama health before retrying
+      const isStillHealthy = await checkOllamaHealth();
+      if (!isStillHealthy) {
+        throw new Error(`Ollama service became unhealthy during retry attempts or model ${OLLAMA_MODEL} is not available`);
+      }
+      
+      if (attempt < OLLAMA_MAX_RETRIES) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
+        console.log(`Waiting ${delay}ms before retry...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  
+  console.error('All Ollama request attempts failed:', lastError);
+  throw new Error(`Failed to get response from Ollama after ${OLLAMA_MAX_RETRIES} attempts: ${lastError?.message}`);
+};
 
 // --- API Endpoints --- 
 
@@ -540,10 +658,7 @@ router.post('/summarize-email', async (req, res) => {
     }
     
     // Initialize Ollama client for Mistral
-    const ollamaHost = "http://192.168.1.79:11434"; 
-    const ollamaModel = "mistral";
-    console.log(`Initializing Ollama model ${ollamaModel} at ${ollamaHost}...`);
-    const ollama = new ChatOllama({ baseUrl: ollamaHost, model: ollamaModel, temperature: 0.7 });
+    const ollama = createOllamaClient(0.7);
 
     // Extract plain text from HTML if needed
     let plainTextBody = emailBody;
@@ -560,6 +675,7 @@ router.post('/summarize-email', async (req, res) => {
     // Create the prompt with email details
     const summarizationPrompt = `
 Summarize the following email in a playful, informal, and witty tone. Be direct, engaging, and a little cheeky. Keep it under 100 words.
+Do not return JSON format. Just return the summary text directly.
 
 ${emailSubject ? `Subject: ${emailSubject}\n` : ''}
 ${senderEmail ? `From: ${senderEmail}\n` : ''}
@@ -568,7 +684,7 @@ ${plainTextBody}
     `;
 
     console.log("Sending email to Mistral for summarization...");
-    const summaryResponse = await ollama.invoke(summarizationPrompt);
+    const summaryResponse = await callOllamaWithTimeout(ollama, summarizationPrompt);
     const summaryText = summaryResponse.content.toString().trim();
     
     console.log("Summary generated successfully.");
@@ -606,9 +722,9 @@ ${plainTextBody}
   </div>
 </body>
 </html>`;
-      res.json({ summary: summaryText, html: htmlSummary });
+      res.json({ content: summaryText, html: htmlSummary });
     } else {
-      res.json({ summary: summaryText });
+      res.json({ content: summaryText });
     }
     
   } catch (error: any) {
@@ -621,7 +737,7 @@ ${plainTextBody}
 });
 
 // --- Detect Email Intent Endpoint ---
-router.post('/detect-intent', async (req, res) => {
+router.post('/detect-intent', async (req: Request, res: Response, next: NextFunction) => {
   console.log("--- Reached POST /detect-intent handler ---");
   
   try {
@@ -693,53 +809,44 @@ router.post('/detect-intent', async (req, res) => {
         : 'None';
 
     // 6. Initialize Ollama client
-    console.log(`Initializing Ollama model ${OLLAMA_MODEL} at ${OLLAMA_HOST}...`);
-    const ollama = new ChatOllama({
-      baseUrl: OLLAMA_HOST,
-      model: OLLAMA_MODEL,
-      temperature: 0.1, // Lower temperature for more deterministic structured output
-      format: "json", // Request JSON format directly if supported by Ollama version/model
-    });
+    const ollama = createOllamaClient(0.1);
 
     // 7. Create the *structured* prompt
-    const intentPrompt = `
-    You are an AI assistant analyzing emails to help a user quickly understand their purpose and identify required actions for task management. Your goal is to provide a structured summary containing the email's category and a list of structured actions.
+    const intentPrompt = `You are an AI assistant analyzing emails to help a user quickly understand their purpose and identify required actions for task management. Your goal is to provide a structured summary containing the email's category and a list of structured actions.
 
-    **Instructions:**
+**Instructions:**
+1. Analyze the **Email Context** provided below.
+2. Determine the primary **\`category\`**. Choose the *single best fit* from this list: ${ALLOWED_CATEGORIES.map(c => `\`${c}\``).join(', ')}.
+3. Identify all distinct and actionable items or key information points. For each, create a JSON object with the following keys:
+    * **\`intent_type\`**: Classify the action. Choose the *single best fit* from: ${ALLOWED_INTENT_TYPES.map(i => `\`${i}\``).join(', ')}. Use \`unknown\` if unsure or if it's just informational but worth noting.
+    * **\`description\`**: A concise, human-readable summary of the action or information point (e.g., "Reply with availability by Friday", "Review attached Q3 report", "Meeting scheduled for Tuesday at 10 AM"). Start actions with a verb.
+    * **\`details\`**: An optional JSON object containing structured data relevant to the intent. Provide details *only if clearly present* in the email. Possible keys include:
+        * For \`create_task\`: \`suggested_title\` (string), \`due_date_hint\` (string, e.g., "Tomorrow", "2025-10-25")
+        * For \`draft_reply_email\`: \`topic\` (string), \`deadline\` (string), \`recipient_hint\` (string)
+        * For \`schedule_event\`: \`event_title\` (string), \`date_time_text\` (string, e.g., "next Tuesday at 3pm"), \`date_time_iso\` (string, ISO 8601 if possible), \`location_hint\` (string)
+        * For \`open_link\`: \`url\` (string), \`link_description\` (string)
+        * For \`review_document\`: \`document_hint\` (string, e.g., "attached PDF", "report"), \`deadline\` (string)
+        * (No specific details needed for \`archive_email\` or \`unknown\`)
+4. If no specific actions or key information points are found, return an empty list for \`structured_actions\`.
+5. Respond *only* with a single, valid JSON object containing exactly two keys: \`category\` (string) and \`structured_actions\` (a list of the JSON objects described above). Do not add explanations, greetings, or any text outside the JSON structure.
 
-    1.  Analyze the **Email Context** provided below.
-    2.  Determine the primary **\`category\`**. Choose the *single best fit* from this list: ${ALLOWED_CATEGORIES.map(c => `\`${c}\``).join(', ')}.
-    3.  Identify all distinct and actionable items or key information points. For each, create a JSON object with the following keys:
-        * **\`intent_type\`**: Classify the action. Choose the *single best fit* from: ${ALLOWED_INTENT_TYPES.map(i => `\`${i}\``).join(', ')}. Use \`unknown\` if unsure or if it's just informational but worth noting.
-        * **\`description\`**: A concise, human-readable summary of the action or information point (e.g., "Reply with availability by Friday", "Review attached Q3 report", "Meeting scheduled for Tuesday at 10 AM"). Start actions with a verb.
-        * **\`details\`**: An optional JSON object containing structured data relevant to the intent. Provide details *only if clearly present* in the email. Possible keys include:
-            * For \`create_task\`: \`suggested_title\` (string), \`due_date_hint\` (string, e.g., "Tomorrow", "2025-10-25")
-            * For \`draft_reply_email\`: \`topic\` (string), \`deadline\` (string), \`recipient_hint\` (string)
-            * For \`schedule_event\`: \`event_title\` (string), \`date_time_text\` (string, e.g., "next Tuesday at 3pm"), \`date_time_iso\` (string, ISO 8601 if possible), \`location_hint\` (string)
-            * For \`open_link\`: \`url\` (string), \`link_description\` (string)
-            * For \`review_document\`: \`document_hint\` (string, e.g., "attached PDF", "report"), \`deadline\` (string)
-            * (No specific details needed for \`archive_email\` or \`unknown\`)
-    4.  If no specific actions or key information points are found, return an empty list for \`structured_actions\`.
-    5.  Respond *only* with a single, valid JSON object containing exactly two keys: \`category\` (string) and \`structured_actions\` (a list of the JSON objects described above). Do not add explanations, greetings, or any text outside the JSON structure.
+**Email Context:**
+---
+Sender: ${emailFrom}
+Subject: ${emailSubject}
+Date: ${emailDateReceived}
+Attachments: ${attachmentListString}
+Content:
+${emailBody}
+---
 
-    **Email Context:**
-    ---
-    Sender: ${emailFrom}
-    Subject: ${emailSubject}
-    Date: ${emailDateReceived}
-    Attachments: ${attachmentListString}
-    Content:
-    ${emailBody}
-    ---
-
-    **JSON Output:**
-    `;
+**JSON Output:**`;
 
     // 8. Invoke Ollama
     console.log("Analyzing email for structured actions...");
     let analysisResponse;
     try {
-        analysisResponse = await ollama.invoke(intentPrompt);
+        analysisResponse = await callOllamaWithTimeout(ollama, intentPrompt);
     } catch (ollamaError: any) {
         console.error("Error calling Ollama:", ollamaError);
         return res.status(502).json({ // Bad Gateway - error interacting with downstream service
@@ -862,32 +969,25 @@ router.post('/generate-email', async (req, res) => {
     } = req.body;
     
     // Initialize Ollama client for Mistral
-    const ollamaHost = "http://192.168.1.79:11434"; 
-    const ollamaModel = "mistral";
-    console.log(`Initializing Ollama model ${ollamaModel} at ${ollamaHost}...`);
-    const ollama = new ChatOllama({ baseUrl: ollamaHost, model: ollamaModel, temperature: 0.7 });
+    const ollama = createOllamaClient(0.7);
 
     // Create the prompt for email generation
-    const emailPrompt = `
-    Generate a professional email with the following parameters:
-    ${subject ? `Subject: ${subject}\n` : ''}
-    ${recipientEmail ? `Recipient: ${recipientEmail}\n` : ''}
-    ${body ? `Context/Key Points to include:\n${body}\n` : ''}
-    Tone: ${tone}
-      
-    Please generate:
-    1. A clear and concise subject line (if not provided)
-    2. A well-structured email body
-    3. Appropriate greeting and closing
-    4. Maintain the specified tone throughout
-    5. Include all necessary information from the context
-    6. Keep it professional and engaging
-      
-    Format the response as a JSON object with 'subject' and 'body' fields.
-        `;
+    const emailPrompt = `Generate a professional email with the following parameters:
+${subject ? `Subject: ${subject}\n` : ''}${recipientEmail ? `Recipient: ${recipientEmail}\n` : ''}${body ? `Context/Key Points to include:\n${body}\n` : ''}
+Tone: ${tone}
+
+Please generate:
+1. A clear and concise subject line (if not provided)
+2. A well-structured email body
+3. Appropriate greeting and closing
+4. Maintain the specified tone throughout
+5. Include all necessary information from the context
+6. Keep it professional and engaging
+
+Format the response as a JSON object with 'subject' and 'body' fields.`;
       
         console.log("Sending request to Mistral for email generation...");
-        const response = await ollama.invoke(emailPrompt);
+        const response = await callOllamaWithTimeout(ollama, emailPrompt);
         const generatedEmail = response.content.toString().trim();
         
         // Parse the response to ensure it's valid JSON
@@ -962,16 +1062,14 @@ router.post('/generate-email-with-revisions', async (req, res) => {
     res.setHeader('X-Accel-Buffering', 'no'); // Disable proxy buffering
 
     // Create appropriate prompt based on whether it's a revision or new email
-    const emailPrompt = isRevision ? `
-You are an AI assistant helping to revise an email. Here is the conversation history and the requested changes:
+    const revisionPrompt = `You are an AI assistant helping to revise an email. Here is the conversation history and the requested changes:
 
 Previous Emails:
 ${previousEmails.map((email: EmailContent, index: number) => `
 Email ${index + 1}:
 Subject: ${email.subject}
 Body: ${email.body}
-Timestamp: ${email.timestamp || 'N/A'}
-`).join('\n')}
+Timestamp: ${email.timestamp || 'N/A'}`).join('\n')}
 
 Requested Changes:
 ${revisionInstructions}
@@ -992,9 +1090,9 @@ IMPORTANT: Your response must be a valid JSON object with the following structur
   "conversationContext": "Brief summary of how this fits into the conversation"
 }
 
-Do not include any text outside of this JSON structure.
-    ` : `
-Generate a professional email based on the following prompt:
+Do not include any text outside of this JSON structure.`;
+
+    const newEmailPrompt = `Generate a professional email based on the following prompt:
 ${prompt}
 
 Tone: ${tone}
@@ -1013,22 +1111,16 @@ IMPORTANT: Your response must be a valid JSON object with the following structur
   "body": "Email body content"
 }
 
-Do not include any text outside of this JSON structure.
-    `;
+Do not include any text outside of this JSON structure.`;
 
-    console.log("Generated prompt:", emailPrompt);
+    const emailPrompt = isRevision ? revisionPrompt : newEmailPrompt;
 
     // Send initial event to establish connection
     res.write('data: {"status": "starting"}\n\n');
     console.log("Sent initial connection event");
 
     // Initialize Ollama client
-    console.log(`Initializing Ollama model ${OLLAMA_MODEL} at ${OLLAMA_HOST}...`);
-    const ollama = new ChatOllama({ 
-      baseUrl: OLLAMA_HOST, 
-      model: OLLAMA_MODEL, 
-      temperature: 0.7
-    });
+    const ollama = createOllamaClient(0.7);
 
     // Use a simpler streaming approach with timeout
     try {
