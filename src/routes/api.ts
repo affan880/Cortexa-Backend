@@ -3,19 +3,23 @@ import { createGmailTools } from '../utils/gmailUtils';
 import { runGmailAgent } from '../agents/gmailAgent';
 import { google } from "googleapis";
 import { OAuth2Client } from "google-auth-library";
-import { ChatOllama } from "@langchain/community/chat_models/ollama";
-import { ChatOpenAI } from "@langchain/openai";
 import { Buffer } from 'buffer'; // Needed for base64 decoding
 import compression from 'compression';
+import { CohereClient } from 'cohere-ai';
 
 console.log("--- Loading src/routes/api.ts ---");
 
 // --- Configuration --- 
-const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://192.168.1.79:11434";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "mistral:latest";
+const COHERE_API_KEY = process.env.COHERE_API_KEY;
 const MAX_BODY_CHARS = 8000;
-const OLLAMA_TIMEOUT = 180000;
-const OLLAMA_MAX_RETRIES = 3;
+const COHERE_TIMEOUT = 180000;
+const COHERE_MAX_RETRIES = 3;
+const MAX_EMAIL_LENGTH = 2000; // Characters to keep for summarization
+
+// Initialize Cohere
+const cohere = new CohereClient({
+  token: COHERE_API_KEY
+});
 
 // --- Allowed Categories and Intents --- 
 const ALLOWED_CATEGORIES = [
@@ -267,111 +271,51 @@ interface EmailContent {
   timestamp?: string;
 }
 
-// Helper function to check if Ollama is ready
-const checkOllamaHealth = async (): Promise<boolean> => {
-  try {
-    console.log('Checking Ollama health...');
-    const response = await fetch(`${OLLAMA_HOST}/api/tags`);
-    if (!response.ok) {
-      console.error(`Failed to get model list: ${response.statusText}`);
-      return false;
-    }
-    const data = await response.json();
-    const models = data.models || [];
-    console.log('Available models:', JSON.stringify(models, null, 2));
-    
-    // Check if our model is available (exact match including version)
-    const modelAvailable = models.some((m: any) => m.name === OLLAMA_MODEL || m.model === OLLAMA_MODEL);
-    if (!modelAvailable) {
-      console.error(`Model ${OLLAMA_MODEL} not found in available models:`, 
-        models.map((m: any) => m.name || m.model));
-      return false;
-    }
-    console.log(`Model ${OLLAMA_MODEL} is available`);
-    return true;
-  } catch (error) {
-    console.error('Ollama health check failed:', error);
-    return false;
-  }
-};
-
-// Helper function to create Ollama client
-const createOllamaClient = (temperature = 0.7) => {
-  return new ChatOllama({
-    baseUrl: OLLAMA_HOST,
-    model: OLLAMA_MODEL,
+// Helper function to create Cohere client
+const createCohereClient = (temperature = 0.7) => {
+  return {
     temperature,
-    maxRetries: OLLAMA_MAX_RETRIES,
-    format: "json"
-  });
+    maxRetries: COHERE_MAX_RETRIES
+  };
 };
 
-// Helper function to call Ollama with direct API fallback
-const callOllamaWithTimeout = async (ollama: ChatOllama, prompt: string): Promise<{ content: string }> => {
-  // First check if Ollama is healthy
-  const isHealthy = await checkOllamaHealth();
-  if (!isHealthy) {
-    throw new Error(`Ollama service is not healthy or model ${OLLAMA_MODEL} is not available`);
-  }
-
+// Helper function to call Cohere with timeout
+const callCohereWithTimeout = async (prompt: string, temperature = 0.7): Promise<{ content: string }> => {
   let lastError: Error | null = null;
   
-  for (let attempt = 1; attempt <= OLLAMA_MAX_RETRIES; attempt++) {
+  for (let attempt = 1; attempt <= COHERE_MAX_RETRIES; attempt++) {
     try {
-      console.log(`Attempt ${attempt} of ${OLLAMA_MAX_RETRIES} to call Ollama...`);
+      console.log(`Attempt ${attempt} of ${COHERE_MAX_RETRIES} to call Cohere...`);
       
-      // Try direct API call first
-      try {
-        console.log('Attempting direct API call...');
-        const response = await fetch(`${OLLAMA_HOST}/api/generate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: OLLAMA_MODEL,
-            prompt: prompt,
-            stream: false,
-            options: {
-              num_ctx: 2048,
-              num_thread: 4,
-              temperature: 0.7
-            }
-          })
-        });
-        
-        if (response.ok) {
-          const data = await response.json();
-          console.log('Direct API call successful');
-          return { content: data.response };
-        } else {
-          const errorData = await response.text();
-          console.error('Direct API call failed:', response.status, errorData);
-          throw new Error(`API call failed: ${response.status} ${errorData}`);
-        }
-      } catch (directError) {
-        console.warn('Direct API call failed, falling back to LangChain:', directError);
-      }
-      
-      // Fallback to LangChain if direct call fails
       const response = await Promise.race([
-        ollama.invoke(prompt),
+        cohere.generate({
+          prompt: prompt,
+          maxTokens: 1000,
+          temperature: temperature,
+          k: 0,
+          p: 0.9,
+          frequencyPenalty: 0,
+          presencePenalty: 0,
+          stopSequences: [],
+          returnLikelihoods: 'NONE'
+        }),
         new Promise((_, reject) => 
-          setTimeout(() => reject(new Error(`Ollama request timed out after ${OLLAMA_TIMEOUT/1000} seconds`)), OLLAMA_TIMEOUT)
+          setTimeout(() => reject(new Error(`Cohere request timed out after ${COHERE_TIMEOUT/1000} seconds`)), COHERE_TIMEOUT)
         )
-      ]) as { content: string };
+      ]);
       
-      console.log(`Ollama request successful on attempt ${attempt}`);
-      return response;
+      console.log(`Cohere request successful on attempt ${attempt}`);
+      const typedResponse = response as { generations: Array<{ text: string }> };
+      if (typedResponse.generations && typedResponse.generations.length > 0) {
+        return { content: typedResponse.generations[0].text };
+      } else {
+        throw new Error('Invalid response format from Cohere');
+      }
     } catch (error) {
       lastError = error as Error;
       console.error(`Attempt ${attempt} failed:`, error);
       
-      // Check Ollama health before retrying
-      const isStillHealthy = await checkOllamaHealth();
-      if (!isStillHealthy) {
-        throw new Error(`Ollama service became unhealthy during retry attempts or model ${OLLAMA_MODEL} is not available`);
-      }
-      
-      if (attempt < OLLAMA_MAX_RETRIES) {
+      if (attempt < COHERE_MAX_RETRIES) {
         const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
         console.log(`Waiting ${delay}ms before retry...`);
         await new Promise(resolve => setTimeout(resolve, delay));
@@ -379,9 +323,16 @@ const callOllamaWithTimeout = async (ollama: ChatOllama, prompt: string): Promis
     }
   }
   
-  console.error('All Ollama request attempts failed:', lastError);
-  throw new Error(`Failed to get response from Ollama after ${OLLAMA_MAX_RETRIES} attempts: ${lastError?.message}`);
+  console.error('All Cohere request attempts failed:', lastError);
+  throw new Error(`Failed to get response from Cohere after ${COHERE_MAX_RETRIES} attempts: ${lastError?.message}`);
 };
+
+// Add interface for email summary response
+interface EmailSummaryResponse {
+  summary: string;
+  content?: string;
+  html?: string;
+}
 
 // --- API Endpoints --- 
 
@@ -439,9 +390,9 @@ router.post('/list-emails', async (req, res, next) => {
 
 router.post('/analyze-emails', async (req, res, next) => {
   // Read access token and optional parameters from request body
-  const { accessToken, days, count } = req.body;
+  const { accessToken, days, count, categories } = req.body;
   console.log("--- Reached POST /analyze-emails handler ---");
-  console.log(`Received params -> days: ${days}, count: ${count}`);
+  console.log(`Received params -> days: ${days}, count: ${count}, categories: ${categories}`);
 
   // Define defaults and limits
   const DEFAULT_DAYS = 7;
@@ -449,7 +400,12 @@ router.post('/analyze-emails', async (req, res, next) => {
   const MAX_ALLOWED_DAYS = 90; // Set a reasonable upper limit for days
   const DEFAULT_MAX_RESULTS_FOR_DAYS = 50; // Max results when using 'days'
 
-  const CATEGORIES = ["Finance", "Promotions", "Work", "Social", "Events", "Other"];
+  const DEFAULT_CATEGORIES = ["Finance", "Promotions", "Work", "Social", "Events", "Other"];
+  
+  // Use provided categories or default to DEFAULT_CATEGORIES
+  const CATEGORIES = Array.isArray(categories) && categories.length > 0 
+    ? categories 
+    : DEFAULT_CATEGORIES;
 
   if (!accessToken) {
     return res.status(400).json({ error: 'Missing accessToken in request body' });
@@ -459,7 +415,7 @@ router.post('/analyze-emails', async (req, res, next) => {
   const numDays = (days && Number.isInteger(Number(days)) && Number(days) > 0) ? Math.min(Number(days), MAX_ALLOWED_DAYS) : DEFAULT_DAYS;
   const emailCount = (count && Number.isInteger(Number(count)) && Number(count) > 0) ? Math.min(Number(count), MAX_ALLOWED_COUNT) : null;
 
-  console.log(`Effective params -> numDays: ${numDays}, emailCount: ${emailCount}`);
+  console.log(`Effective params -> numDays: ${numDays}, emailCount: ${emailCount}, categories: ${CATEGORIES.join(', ')}`);
 
   try {
     // Step 1: Create OAuth2 client
@@ -485,28 +441,30 @@ router.post('/analyze-emails', async (req, res, next) => {
       // Prioritize count if provided
       console.log(`Fetching specific count: ${emailCount}`);
       messageListParams.maxResults = emailCount;
-      // Optionally, add 'in:inbox' or other filters if desired when using count
-      // messageListParams.q = 'in:inbox'; 
     } else {
       // Use days if count is not provided
       console.log(`Fetching emails from last ${numDays} days...`);
       const timestamp = Math.floor((Date.now() - numDays * 24 * 60 * 60 * 1000) / 1000);
       messageListParams.q = `after:${timestamp}`;
-      messageListParams.maxResults = DEFAULT_MAX_RESULTS_FOR_DAYS; // Use a default max when filtering by days
+      messageListParams.maxResults = DEFAULT_MAX_RESULTS_FOR_DAYS;
     }
 
     const messageListResponse = await gmail.users.messages.list(messageListParams);
     const messages = messageListResponse.data.messages || [];
     if (messages.length === 0) {
-      return res.json({ message: `No emails found matching the criteria (count: ${emailCount}, days: ${numDays}).`, categorizedEmails: {} });
+      return res.json({ 
+        message: `No emails found matching the criteria (count: ${emailCount}, days: ${numDays}).`, 
+        categorizedEmails: {},
+        categories: CATEGORIES 
+      });
     }
     console.log(`Found ${messages.length} emails to process.`);
 
-    // Step 4: Initialize Ollama Client (Pointing to Windows IP)
-    const ollamaHost = "http://192.168.1.79:11434"; // <-- Use Windows IP Address
-    const ollamaModel = "mistral"; 
-    console.log(`Initializing Ollama model ${ollamaModel} at ${ollamaHost}...`);
-    const ollama = new ChatOllama({ baseUrl: ollamaHost, model: ollamaModel, temperature: 0.1 });
+    // Step 4: Initialize Cohere Client
+    console.log("Initializing Cohere client...");
+    const cohereClient = new CohereClient({
+      token: COHERE_API_KEY
+    });
 
     // Step 5: Fetch details, categorize, and collect results grouped by category
     const categorizedEmails: { [key: string]: any[] } = {}; // Initialize object for grouping
@@ -514,12 +472,12 @@ router.post('/analyze-emails', async (req, res, next) => {
 
     // Pre-create maps for faster lookup
     const userLabelToCategoryMap = new Map<string, string>();
-    CATEGORIES.forEach(cat => userLabelToCategoryMap.set(`Label_${cat.toUpperCase()}`, cat)); // Assuming labels created are Label_WORK etc.
+    CATEGORIES.forEach(cat => userLabelToCategoryMap.set(`Label_${cat.toUpperCase()}`, cat));
     const gmailCategoryMap = new Map<string, string>([
         ["CATEGORY_PROMOTIONS", "Promotions"],
         ["CATEGORY_SOCIAL", "Social"],
-        ["CATEGORY_UPDATES", "Other"], // Map Updates to Other or a more suitable category
-        ["CATEGORY_FORUMS", "Other"], // Map Forums to Other or Social
+        ["CATEGORY_UPDATES", "Other"],
+        ["CATEGORY_FORUMS", "Other"],
     ]);
 
     for (const messageHeader of messages) {
@@ -597,8 +555,18 @@ router.post('/analyze-emails', async (req, res, next) => {
                       
                       Respond ONLY with the single category name.
                       `;
-                      const categoryResponse = await ollama.invoke(categorizationPrompt);
-                      let rawCategory = categoryResponse.content.toString().trim();
+                      const categoryResponse = await cohereClient.generate({
+                        prompt: categorizationPrompt,
+                        maxTokens: 1000,
+                        temperature: 0.7,
+                        k: 0,
+                        p: 0.9,
+                        frequencyPenalty: 0,
+                        presencePenalty: 0,
+                        stopSequences: [],
+                        returnLikelihoods: 'NONE'
+                      });
+                      let rawCategory = categoryResponse.generations[0].text.trim();
                       const matchedCategory = CATEGORIES.find(c => rawCategory.toLowerCase() === c.toLowerCase());
                       category = matchedCategory || "Other";
                       console.log(` -> LLM assigned category: ${category}`);
@@ -624,7 +592,11 @@ router.post('/analyze-emails', async (req, res, next) => {
     }
 
     console.log("Email analysis complete. Returning categorized results.");
-    res.json({ message: "Email analysis completed.", categorizedEmails }); // Return the grouped object
+    res.json({ 
+      message: "Email analysis completed.", 
+      categorizedEmails,
+      categories: CATEGORIES 
+    }); // Return the grouped object with categories used
 
   } catch (error) {
     console.error("Error processing /analyze-emails request:", error);
@@ -637,9 +609,10 @@ router.post('/analyze-emails', async (req, res, next) => {
       }
     }
     res.status(500).json({
-        error: "Failed during email analysis",
-        details: errorMessage,
-        googleApiError: googleApiErrorDetails
+      error: "Failed during email analysis",
+      details: errorMessage,
+      googleApiError: googleApiErrorDetails,
+      categories: CATEGORIES // Include categories in error response
     });
   }
 });
@@ -650,47 +623,56 @@ router.post('/summarize-email', async (req, res) => {
   
   try {
     // Extract data from request body
-    const { emailSubject, emailBody, senderEmail, returnHtml = false } = req.body;
+    const { emailBody, returnHtml = false } = req.body;
     
     // Basic validation
     if (!emailBody) {
+      console.error("Missing emailBody in request");
       return res.status(400).json({ error: 'Missing emailBody in request body' });
     }
-    
-    // Initialize Ollama client for Mistral
-    const ollama = createOllamaClient(0.7);
+
+    console.log("Request parameters:", {
+      bodyLength: emailBody.length,
+      returnHtml
+    });
 
     // Extract plain text from HTML if needed
     let plainTextBody = emailBody;
     if (emailBody.includes('<html') || emailBody.includes('<body') || emailBody.includes('<div')) {
-      // Simple HTML stripping - for more complex HTML, consider using a proper HTML parser
+      console.log("Detected HTML content, converting to plain text...");
       plainTextBody = emailBody
         .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
         .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
         .replace(/<[^>]+>/g, ' ')
         .replace(/\s{2,}/g, ' ')
         .trim();
+      console.log("HTML conversion complete, new length:", plainTextBody.length);
     }
 
-    // Create the prompt with email details
-    const summarizationPrompt = `
-Summarize the following email in a playful, informal, and witty tone. Be direct, engaging, and a little cheeky. Keep it under 100 words.
-Do not return JSON format. Just return the summary text directly.
+    // Truncate the email body if it's too long
+    if (plainTextBody.length > MAX_EMAIL_LENGTH) {
+      console.log(`Email body too long (${plainTextBody.length} chars), truncating to ${MAX_EMAIL_LENGTH} chars...`);
+      plainTextBody = plainTextBody.substring(0, MAX_EMAIL_LENGTH) + '...';
+    }
 
-${emailSubject ? `Subject: ${emailSubject}\n` : ''}
-${senderEmail ? `From: ${senderEmail}\n` : ''}
-Email:
-${plainTextBody}
-    `;
+    // Create a more concise prompt
+    const summarizationPrompt = `Summarize this email in a playful, witty tone (max 100 words):
 
-    console.log("Sending email to Mistral for summarization...");
-    const summaryResponse = await callOllamaWithTimeout(ollama, summarizationPrompt);
+${plainTextBody}`;
+
+    console.log("Sending email to Cohere for summarization...");
+    const summaryResponse = await callCohereWithTimeout(summarizationPrompt, 0.7);
     const summaryText = summaryResponse.content.toString().trim();
     
-    console.log("Summary generated successfully.");
+    console.log("Summary generated successfully. Length:", summaryText.length);
+    console.log("Summary preview:", summaryText.substring(0, 100) + "...");
     
-    // Return either plain text or HTML-formatted summary based on returnHtml parameter
+    // Set response headers
+    res.setHeader('Content-Type', 'application/json');
+    
+    // Return response based on returnHtml parameter
     if (returnHtml) {
+      console.log("Generating HTML response...");
       const htmlSummary = `
 <!DOCTYPE html>
 <html>
@@ -722,17 +704,21 @@ ${plainTextBody}
   </div>
 </body>
 </html>`;
-      res.json({ content: summaryText, html: htmlSummary });
+      console.log("HTML response generated. Length:", htmlSummary.length);
+      res.status(200).json({ 
+        summary: summaryText,
+        html: htmlSummary 
+      });
     } else {
-      res.json({ content: summaryText });
+      console.log("Sending plain text response...");
+      res.status(200).json({ 
+        summary: summaryText
+      });
     }
     
   } catch (error: any) {
     console.error("Error in /summarize-email endpoint:", error);
-    res.status(500).json({ 
-      error: 'Failed to summarize email', 
-      details: error.message || 'Unknown error' 
-    });
+    res.status(500).json({ error: 'Failed to summarize email' });
   }
 });
 
@@ -808,8 +794,10 @@ router.post('/detect-intent', async (req: Request, res: Response, next: NextFunc
         ? attachments.map(a => `${a.filename} (${a.mime_type})`).join(', ')
         : 'None';
 
-    // 6. Initialize Ollama client
-    const ollama = createOllamaClient(0.1);
+    // Initialize Cohere client
+    const cohereClient = new CohereClient({
+      token: COHERE_API_KEY
+    });
 
     // 7. Create the *structured* prompt
     const intentPrompt = `You are an AI assistant analyzing emails to help a user quickly understand their purpose and identify required actions for task management. Your goal is to provide a structured summary containing the email's category and a list of structured actions.
@@ -846,12 +834,12 @@ ${emailBody}
     console.log("Analyzing email for structured actions...");
     let analysisResponse;
     try {
-        analysisResponse = await callOllamaWithTimeout(ollama, intentPrompt);
-    } catch (ollamaError: any) {
-        console.error("Error calling Ollama:", ollamaError);
+        analysisResponse = await callCohereWithTimeout(intentPrompt, 0.7);
+    } catch (cohereError: any) {
+        console.error("Error calling Cohere:", cohereError);
         return res.status(502).json({ // Bad Gateway - error interacting with downstream service
             error: 'Failed to get response from AI model',
-            details: ollamaError.message || 'Unknown Ollama error'
+            details: cohereError.message || 'Unknown Cohere error'
         });
     }
 
@@ -968,9 +956,6 @@ router.post('/generate-email', async (req, res) => {
       tone = 'professional' // Default tone
     } = req.body;
     
-    // Initialize Ollama client for Mistral
-    const ollama = createOllamaClient(0.7);
-
     // Create the prompt for email generation
     const emailPrompt = `Generate a professional email with the following parameters:
 ${subject ? `Subject: ${subject}\n` : ''}${recipientEmail ? `Recipient: ${recipientEmail}\n` : ''}${body ? `Context/Key Points to include:\n${body}\n` : ''}
@@ -986,40 +971,40 @@ Please generate:
 
 Format the response as a JSON object with 'subject' and 'body' fields.`;
       
-        console.log("Sending request to Mistral for email generation...");
-        const response = await callOllamaWithTimeout(ollama, emailPrompt);
-        const generatedEmail = response.content.toString().trim();
-        
-        // Parse the response to ensure it's valid JSON
-        let emailContent;
-        try {
-          emailContent = JSON.parse(generatedEmail);
-        } catch (parseError) {
-          // If parsing fails, create a structured response from the raw text
-          const lines = generatedEmail.split('\n');
-          emailContent = {
-            subject: lines[0].replace('Subject:', '').trim(),
-            body: lines.slice(1).join('\n').trim()
-          };
-        }
-        
-        console.log("Email generated successfully.");
-        
-        // Return the generated email
-        res.json({ 
-          subject: emailContent.subject,
-          body: emailContent.body,
-          raw: generatedEmail // Include raw response for debugging
-        });
-        
-      } catch (error: any) {
-        console.error("Error in /generate-email endpoint:", error);
-        res.status(500).json({ 
-          error: 'Failed to generate email', 
-          details: error.message || 'Unknown error' 
-        });
-      }
+    console.log("Sending request to Cohere for email generation...");
+    const response = await callCohereWithTimeout(emailPrompt, 0.7);
+    const generatedEmail = response.content.toString().trim();
+    
+    // Parse the response to ensure it's valid JSON
+    let emailContent;
+    try {
+      emailContent = JSON.parse(generatedEmail);
+    } catch (parseError) {
+      // If parsing fails, create a structured response from the raw text
+      const lines = generatedEmail.split('\n');
+      emailContent = {
+        subject: lines[0].replace('Subject:', '').trim(),
+        body: lines.slice(1).join('\n').trim()
+      };
+    }
+    
+    console.log("Email generated successfully.");
+    
+    // Return the generated email
+    res.json({ 
+      subject: emailContent.subject,
+      body: emailContent.body,
+      raw: generatedEmail // Include raw response for debugging
     });
+    
+  } catch (error: any) {
+    console.error("Error in /generate-email endpoint:", error);
+    res.status(500).json({ 
+      error: 'Failed to generate email', 
+      details: error.message || 'Unknown error' 
+    });
+  }
+});
 
 // --- Generate Email with Revisions Endpoint ---
 router.post('/generate-email-with-revisions', async (req, res) => {
@@ -1119,23 +1104,8 @@ Do not include any text outside of this JSON structure.`;
     res.write('data: {"status": "starting"}\n\n');
     console.log("Sent initial connection event");
 
-    // Initialize Ollama client
-    const ollama = createOllamaClient(0.7);
-
-    // Use a simpler streaming approach with timeout
     try {
-      const response = await Promise.race([
-        ollama.invoke([
-          {
-            role: "user",
-            content: emailPrompt
-          }
-        ]),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Request timed out')), 60000)
-        )
-      ]) as { content: string };
-
+      const response = await callCohereWithTimeout(emailPrompt, 0.7);
       const content = response.content.toString();
       console.log("Received response:", content);
 
