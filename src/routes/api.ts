@@ -13,6 +13,14 @@ console.log("--- Loading src/routes/api.ts ---");
 
 // --- Configuration --- 
 const COHERE_API_KEY = process.env.COHERE_API_KEY;
+
+// Log the key being used (partially redacted)
+if (COHERE_API_KEY) {
+  console.log(`Using Cohere API Key: ${COHERE_API_KEY.substring(0, 4)}...${COHERE_API_KEY.substring(COHERE_API_KEY.length - 4)}`);
+} else {
+  console.error("COHERE_API_KEY environment variable is not set!");
+}
+
 const MAX_BODY_CHARS = 8000;
 const COHERE_TIMEOUT = 180000;
 const COHERE_MAX_RETRIES = 3;
