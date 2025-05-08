@@ -26,8 +26,8 @@ jobs:
       run: npm run build
 
     - name: Deploy to Railway
-      uses: bervProject/railway-deploy@v1
+      uses: railwayapp/cli@master
       with:
-        token: ${{ secrets.RAILWAY_TOKEN }}
-        project_id: ${{ secrets.RAILWAY_PROJECT_ID }}
-        service_id: ${{ secrets.RAILWAY_SERVICE_ID }} 
+        command: up
+      env:
+        RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }} 
