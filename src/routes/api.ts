@@ -677,9 +677,16 @@ router.post('/summarize-email', async (req, res) => {
     };
 
     // Extract text content for summarization
-    const textContent = extractTextContent(emailBody);
+    let textContent = extractTextContent(emailBody);
     console.log("Extracted text content length:", textContent.length);
-    console.log("Text content preview:", textContent.substring(0, 200));
+
+    // Truncate textContent if it exceeds the limit
+    if (textContent.length > MAX_EMAIL_LENGTH) {
+      console.warn(`Text content exceeds limit (${textContent.length} > ${MAX_EMAIL_LENGTH}). Truncating...`);
+      textContent = textContent.substring(0, MAX_EMAIL_LENGTH) + "... [Content Truncated]";
+    }
+
+    console.log("Text content preview (potentially truncated):", textContent.substring(0, 200));
 
     // Create the prompt for Cohere to generate summary
     const summarizationPrompt = `You are an AI assistant that summarizes emails in a clear and engaging way. 
