@@ -16,25 +16,25 @@ export declare const TaskSchema: z.ZodObject<{
     tags: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
 }, "strip", z.ZodTypeAny, {
     status: "TODO" | "IN_PROGRESS" | "COMPLETED" | "ARCHIVED";
+    userId: string;
     id: string;
     title: string;
     priority: "LOW" | "MEDIUM" | "HIGH" | "URGENT";
     createdAt: Date;
     updatedAt: Date;
-    userId: string;
+    tags?: string[] | undefined;
     description?: string | undefined;
     dueDate?: Date | undefined;
-    tags?: string[] | undefined;
 }, {
     status: "TODO" | "IN_PROGRESS" | "COMPLETED" | "ARCHIVED";
+    userId: string;
     id: string;
     title: string;
     priority: "LOW" | "MEDIUM" | "HIGH" | "URGENT";
     createdAt: Date;
     updatedAt: Date;
-    userId: string;
+    tags?: string[] | undefined;
     description?: string | undefined;
     dueDate?: Date | undefined;
-    tags?: string[] | undefined;
 }>;
 export type Task = z.infer<typeof TaskSchema>;

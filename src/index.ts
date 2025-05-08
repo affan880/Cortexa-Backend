@@ -5,7 +5,6 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import apiRoutes from './routes/api';
-import testRoutes from './routes/test';
 import { UserRecord } from 'firebase-admin/auth';
 import gmailRoutes from './routes/gmail';
 
@@ -14,7 +13,7 @@ dotenv.config();
 
 // Initialize Express app
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 8080; // Railway uses 8080 by default
 
 // Middleware
 app.use(cors());
@@ -154,6 +153,10 @@ app.use(requestLoggerMiddleware);
 app.use(detailedLoggerMiddleware);
 
 // Health check endpoint
+app.get('/', (req, res) => {
+  res.status(200).json({ status: 'ok', message: 'TaskBox API is running' });
+});
+
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
@@ -190,7 +193,6 @@ app.post('/admin/clear-logs', (req, res) => {
 });
 
 app.use('/api', apiRoutes);
-app.use('/api', testRoutes);
 app.use('/api/gmail', gmailRoutes);
 
 app.get('/test-firebase', async (req, res) => {

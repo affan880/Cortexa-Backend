@@ -12,13 +12,11 @@ interface GeminiResponse {
 }
 
 interface BarnApiResponse {
-    data: Array<{ summary_text: string }>;
+  data: Array<{ summary_text: string }>;
 }
 
 interface SmartRepliesResponse {
-  data: {
-    generated_reply: string;
-  };
+  data: Array<{ generated_text: string }>;
 }
 
 export const generateAIResponse = async (prompt: string): Promise<string> => {
@@ -51,7 +49,8 @@ export const generateAISummarization = async (subject: string, body: string): Pr
     const result = await barnApi.post<BarnApiResponse>("/", {
       inputs: `Summarize the following email. Focus on key actions or information.\n\nSubject: ${subject}\n\nBody: ${body}`,
     });
-    const generatedText = result.data[0]?.summary_text;
+    const summaryData = result.data.data[0];
+    const generatedText = summaryData?.summary_text;
     console.log("Result:", result);
     return generatedText ?? '';
   } catch (error) {
@@ -71,7 +70,8 @@ export const generateSmartReply = async (prompt: string): Promise<string> => {
     const result = await smartReplies.post<SmartRepliesResponse>("/", {
       inputs: prompt,
     });
-    const generatedText = result.data[0]?.generated_text;
+    const replyData = result.data.data[0];
+    const generatedText = replyData?.generated_text;
     console.log("Result:", result);
     return generatedText ?? '';
   }

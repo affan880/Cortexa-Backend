@@ -8,15 +8,15 @@ export declare const CreateTaskRequestSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     title: string;
     priority: "LOW" | "MEDIUM" | "HIGH" | "URGENT";
+    tags?: string[] | undefined;
     description?: string | undefined;
     dueDate?: string | undefined;
-    tags?: string[] | undefined;
 }, {
     title: string;
     priority: "LOW" | "MEDIUM" | "HIGH" | "URGENT";
+    tags?: string[] | undefined;
     description?: string | undefined;
     dueDate?: string | undefined;
-    tags?: string[] | undefined;
 }>;
 export type CreateTaskRequest = z.infer<typeof CreateTaskRequestSchema>;
 export declare const UpdateTaskRequestSchema: z.ZodObject<{
@@ -28,18 +28,18 @@ export declare const UpdateTaskRequestSchema: z.ZodObject<{
     tags: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
 }, "strip", z.ZodTypeAny, {
     status?: "TODO" | "IN_PROGRESS" | "COMPLETED" | "ARCHIVED" | undefined;
-    title?: string | undefined;
+    tags?: string[] | undefined;
     description?: string | undefined;
+    title?: string | undefined;
     priority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT" | undefined;
     dueDate?: string | undefined;
-    tags?: string[] | undefined;
 }, {
     status?: "TODO" | "IN_PROGRESS" | "COMPLETED" | "ARCHIVED" | undefined;
-    title?: string | undefined;
+    tags?: string[] | undefined;
     description?: string | undefined;
+    title?: string | undefined;
     priority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT" | undefined;
     dueDate?: string | undefined;
-    tags?: string[] | undefined;
 }>;
 export type UpdateTaskRequest = z.infer<typeof UpdateTaskRequestSchema>;
 export declare const TaskResponseSchema: z.ZodObject<z.objectUtil.extendShape<{
@@ -59,25 +59,25 @@ export declare const TaskResponseSchema: z.ZodObject<z.objectUtil.extendShape<{
     updatedAt: z.ZodString;
 }>, "strip", z.ZodTypeAny, {
     status: "TODO" | "IN_PROGRESS" | "COMPLETED" | "ARCHIVED";
+    userId: string;
     id: string;
     title: string;
     priority: "LOW" | "MEDIUM" | "HIGH" | "URGENT";
     createdAt: string;
     updatedAt: string;
-    userId: string;
+    tags?: string[] | undefined;
     description?: string | undefined;
     dueDate?: string | undefined;
-    tags?: string[] | undefined;
 }, {
     status: "TODO" | "IN_PROGRESS" | "COMPLETED" | "ARCHIVED";
+    userId: string;
     id: string;
     title: string;
     priority: "LOW" | "MEDIUM" | "HIGH" | "URGENT";
     createdAt: string;
     updatedAt: string;
-    userId: string;
+    tags?: string[] | undefined;
     description?: string | undefined;
     dueDate?: string | undefined;
-    tags?: string[] | undefined;
 }>;
 export type TaskResponse = z.infer<typeof TaskResponseSchema>;
