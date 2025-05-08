@@ -26,8 +26,9 @@ jobs:
       run: npm run build
 
     - name: Deploy to Railway
-      uses: railwayapp/cli@master
-      with:
-        command: up
-      env:
-        RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }} 
+      run: |
+        curl -X POST \
+          -H "Authorization: Bearer ${{ secrets.RAILWAY_TOKEN }}" \
+          -H "Content-Type: application/json" \
+          -d '{"projectId": "${{ secrets.RAILWAY_PROJECT_ID }}", "branch": "main"}' \
+          https://backboard.railway.app/deploy 
