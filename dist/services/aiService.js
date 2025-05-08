@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.generateAISummarization = exports.generateAIResponse = void 0;
+exports.generateSmartReply = exports.generateAISummarization = exports.generateAIResponse = void 0;
 const aiConfig_1 = require("../config/aiConfig");
 const generateAIResponse = async (prompt) => {
     console.log("Generating AI response...", prompt);
@@ -13,9 +13,8 @@ const generateAIResponse = async (prompt) => {
             ],
         });
         console.log("Result:", result.data);
-        // const generatedText = result.data?.candidates[0].content.parts[0].text;
-        // return generatedText;
-        return "Hello";
+        const generatedText = result.data?.candidates[0].content.parts[0].text;
+        return generatedText;
     }
     catch (error) {
         const axiosError = error;
@@ -28,16 +27,16 @@ const generateAIResponse = async (prompt) => {
     }
 };
 exports.generateAIResponse = generateAIResponse;
-const generateAISummarization = async (prompt) => {
-    console.log("Generating AI response...", prompt);
+const generateAISummarization = async (subject, body) => {
+    console.log("Generating AI response...", subject, body);
     try {
         const result = await aiConfig_1.barnApi.post("/", {
-            inputs: prompt,
+            inputs: `Summarize the following email. Focus on key actions or information.\n\nSubject: ${subject}\n\nBody: ${body}`,
         });
-        console.log("Result:", result.data);
-        // const generatedText = result.data?.candidates[0].content.parts[0].text;
-        // return generatedText;
-        return "Hello";
+        const summaryData = result.data.data[0];
+        const generatedText = summaryData?.summary_text;
+        console.log("Result:", result);
+        return generatedText ?? '';
     }
     catch (error) {
         const axiosError = error;
@@ -50,4 +49,23 @@ const generateAISummarization = async (prompt) => {
     }
 };
 exports.generateAISummarization = generateAISummarization;
+const generateSmartReply = async (prompt) => {
+    console.log("Generating smart reply...", prompt);
+    try {
+        const result = await aiConfig_1.smartReplies.post("/", {
+            inputs: prompt,
+        });
+        const replyData = result.data.data[0];
+        const generatedText = replyData?.generated_text;
+        console.log("Result:", result);
+        return generatedText ?? '';
+    }
+    catch (error) {
+        const axiosError = error;
+        console.error("Error generating smart reply:", axiosError.response?.data || axiosError.message);
+        const errorMessage = axiosError.response?.data?.error?.message || axiosError.message;
+        throw new Error(`Failed to generate smart reply: ${errorMessage}`);
+    }
+};
+exports.generateSmartReply = generateSmartReply;
 //# sourceMappingURL=aiService.js.map

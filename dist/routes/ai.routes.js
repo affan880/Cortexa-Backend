@@ -8,5 +8,6 @@ const ai_controller_1 = require("../controllers/ai.controller");
 const router = express_1.default.Router();
 router.post("/ask", ai_controller_1.askQuestion);
 router.post("/summarize", ai_controller_1.summarization);
+router.post("/smart-reply", ai_controller_1.smartReply);
 exports.default = router;
 //# sourceMappingURL=ai.routes.js.map

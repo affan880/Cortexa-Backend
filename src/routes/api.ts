@@ -6,6 +6,8 @@ import { OAuth2Client } from "google-auth-library";
 import { Buffer } from 'buffer'; // Needed for base64 decoding
 import compression from 'compression';
 import { CohereClient } from 'cohere-ai';
+import { parse } from 'node-html-parser';
+import * as admin from 'firebase-admin';
 
 console.log("--- Loading src/routes/api.ts ---");
 
@@ -399,13 +401,14 @@ router.post('/analyze-emails', async (req, res, next) => {
   const MAX_ALLOWED_COUNT = 100; // Set a reasonable upper limit for count
   const MAX_ALLOWED_DAYS = 90; // Set a reasonable upper limit for days
   const DEFAULT_MAX_RESULTS_FOR_DAYS = 50; // Max results when using 'days'
-
-  const DEFAULT_CATEGORIES = ["Finance", "Promotions", "Work", "Social", "Events", "Other"];
   
-  // Use provided categories or default to DEFAULT_CATEGORIES
-  const CATEGORIES = Array.isArray(categories) && categories.length > 0 
-    ? categories 
-    : DEFAULT_CATEGORIES;
+  // Validate categories
+  if (!Array.isArray(categories) || categories.length === 0) {
+    return res.status(400).json({ 
+      error: 'Missing or invalid categories array in request body',
+      message: 'Please provide an array of categories to filter emails'
+    });
+  }
 
   if (!accessToken) {
     return res.status(400).json({ error: 'Missing accessToken in request body' });
@@ -415,7 +418,7 @@ router.post('/analyze-emails', async (req, res, next) => {
   const numDays = (days && Number.isInteger(Number(days)) && Number(days) > 0) ? Math.min(Number(days), MAX_ALLOWED_DAYS) : DEFAULT_DAYS;
   const emailCount = (count && Number.isInteger(Number(count)) && Number(count) > 0) ? Math.min(Number(count), MAX_ALLOWED_COUNT) : null;
 
-  console.log(`Effective params -> numDays: ${numDays}, emailCount: ${emailCount}, categories: ${CATEGORIES.join(', ')}`);
+  console.log(`Effective params -> numDays: ${numDays}, emailCount: ${emailCount}, categories: ${categories.join(', ')}`);
 
   try {
     // Step 1: Create OAuth2 client
@@ -455,7 +458,7 @@ router.post('/analyze-emails', async (req, res, next) => {
       return res.json({ 
         message: `No emails found matching the criteria (count: ${emailCount}, days: ${numDays}).`, 
         categorizedEmails: {},
-        categories: CATEGORIES 
+        categories: categories 
       });
     }
     console.log(`Found ${messages.length} emails to process.`);
@@ -472,7 +475,7 @@ router.post('/analyze-emails', async (req, res, next) => {
 
     // Pre-create maps for faster lookup
     const userLabelToCategoryMap = new Map<string, string>();
-    CATEGORIES.forEach(cat => userLabelToCategoryMap.set(`Label_${cat.toUpperCase()}`, cat));
+    categories.forEach(cat => userLabelToCategoryMap.set(`Label_${cat.toUpperCase()}`, cat));
     const gmailCategoryMap = new Map<string, string>([
         ["CATEGORY_PROMOTIONS", "Promotions"],
         ["CATEGORY_SOCIAL", "Social"],
@@ -482,7 +485,7 @@ router.post('/analyze-emails', async (req, res, next) => {
 
     for (const messageHeader of messages) {
         if (!messageHeader.id) continue;
-        let category = "Processing Error"; // Default category if something goes wrong
+        let category = "Other"; // Default category if something goes wrong
         let emailData: any = {
             messageId: messageHeader.id,
             threadId: messageHeader.threadId || null,
@@ -499,7 +502,7 @@ router.post('/analyze-emails', async (req, res, next) => {
 
             if (!payload || !payload.headers) {
                 emailData.error = "Missing payload or headers";
-                category = "Extraction Failed";
+                category = "Other";
             } else {
                 const headers = payload.headers;
                 const subjectHeader = headers.find(h => h.name === 'Subject');
@@ -528,10 +531,14 @@ router.post('/analyze-emails', async (req, res, next) => {
                 if (!foundCategory) {
                     for (const labelId of emailData.labelIds) {
                         if (gmailCategoryMap.has(labelId)) {
-                            category = gmailCategoryMap.get(labelId)!;
-                            console.log(` -> Category from Gmail label (${labelId}): ${category}`);
-                            foundCategory = true;
-                            break;
+                            const gmailCategory = gmailCategoryMap.get(labelId)!;
+                            // Only use Gmail category if it matches one of the user's requested categories
+                            if (categories.includes(gmailCategory)) {
+                                category = gmailCategory;
+                                console.log(` -> Category from Gmail label (${labelId}): ${category}`);
+                                foundCategory = true;
+                                break;
+                            }
                         }
                     }
                 }
@@ -539,13 +546,13 @@ router.post('/analyze-emails', async (req, res, next) => {
                 // 3. Use LLM as fallback or if body is missing
                 if (!foundCategory || !body) {
                     if (!body && !foundCategory) {
-                       console.warn(`Could not extract plain text body for message ID: ${messageHeader.id}. Skipping LLM categorization, using 'Other'.`);
+                       console.warn(`Could not extract plain text body for message ID: ${messageHeader.id}. Using 'Other'.`);
                        category = "Other"; 
                        emailData.error = "Could not extract plain text body";
                     } else if (!foundCategory) {
                       console.log(`Categorizing via LLM: "${emailData.subject}" from ${emailData.from}...`);
                       const categorizationPrompt = 
-                      `Given the following email details and existing labels, categorize this email into ONE of these categories: ${CATEGORIES.join(", ")}.
+                      `Given the following email details and existing labels, categorize this email into ONE of these categories: ${categories.join(", ")}.
                       Consider the labels as strong hints. Prioritize specific categories over 'Other' if applicable.
                       
                       Existing Labels: [${emailData.labelIds.join(", ")}]
@@ -567,7 +574,7 @@ router.post('/analyze-emails', async (req, res, next) => {
                         returnLikelihoods: 'NONE'
                       });
                       let rawCategory = categoryResponse.generations[0].text.trim();
-                      const matchedCategory = CATEGORIES.find(c => rawCategory.toLowerCase() === c.toLowerCase());
+                      const matchedCategory = categories.find(c => rawCategory.toLowerCase() === c.toLowerCase());
                       category = matchedCategory || "Other";
                       console.log(` -> LLM assigned category: ${category}`);
                     }
@@ -575,7 +582,7 @@ router.post('/analyze-emails', async (req, res, next) => {
             }
         } catch (msgError: any) {
             console.error(`Failed to process message ID ${messageHeader.id}:`, msgError.message);
-            category = "Processing Error";
+            category = "Other";
             emailData.error = msgError.message;
         }
 
@@ -583,7 +590,7 @@ router.post('/analyze-emails', async (req, res, next) => {
         if (!categorizedEmails[category]) {
             categorizedEmails[category] = [];
         }
-        if (category === "Processing Error" || category === "Extraction Failed") {
+        if (category === "Other") {
            // Keep the error field for these
         } else {
            delete emailData.error; // Remove error field if successfully categorized
@@ -595,7 +602,7 @@ router.post('/analyze-emails', async (req, res, next) => {
     res.json({ 
       message: "Email analysis completed.", 
       categorizedEmails,
-      categories: CATEGORIES 
+      categories: categories 
     }); // Return the grouped object with categories used
 
   } catch (error) {
@@ -612,7 +619,7 @@ router.post('/analyze-emails', async (req, res, next) => {
       error: "Failed during email analysis",
       details: errorMessage,
       googleApiError: googleApiErrorDetails,
-      categories: CATEGORIES // Include categories in error response
+      categories: categories // Include categories in error response
     });
   }
 });
@@ -636,36 +643,86 @@ router.post('/summarize-email', async (req, res) => {
       returnHtml
     });
 
-    // Extract plain text from HTML if needed
-    let plainTextBody = emailBody;
-    if (emailBody.includes('<html') || emailBody.includes('<body') || emailBody.includes('<div')) {
-      console.log("Detected HTML content, converting to plain text...");
-      plainTextBody = emailBody
-        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/\s{2,}/g, ' ')
-        .trim();
-      console.log("HTML conversion complete, new length:", plainTextBody.length);
-    }
+    // Function to extract text content while preserving HTML structure
+    const extractTextContent = (html: string): string => {
+      try {
+        // Parse the HTML
+        const root = parse(html);
+        
+        // Remove script and style tags
+        root.querySelectorAll('script, style').forEach(tag => tag.remove());
+        
+        // Get text content while preserving structure
+        let textContent = '';
+        const walk = (node: any) => {
+          if (node.nodeType === 3) { // Text node
+            textContent += node.text + ' ';
+          } else if (node.nodeType === 1) { // Element node
+            // Add space after block elements
+            if (['div', 'p', 'br', 'li'].includes(node.tagName?.toLowerCase())) {
+              textContent += '\n';
+            }
+            // Process child nodes
+            node.childNodes.forEach(walk);
+          }
+        };
+        
+        walk(root);
+        return textContent.trim();
+      } catch (error) {
+        console.error('Error parsing HTML:', error);
+        // Fallback to simple text extraction if parsing fails
+        return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      }
+    };
 
-    // Truncate the email body if it's too long
-    if (plainTextBody.length > MAX_EMAIL_LENGTH) {
-      console.log(`Email body too long (${plainTextBody.length} chars), truncating to ${MAX_EMAIL_LENGTH} chars...`);
-      plainTextBody = plainTextBody.substring(0, MAX_EMAIL_LENGTH) + '...';
-    }
+    // Extract text content for summarization
+    const textContent = extractTextContent(emailBody);
+    console.log("Extracted text content length:", textContent.length);
+    console.log("Text content preview:", textContent.substring(0, 200));
 
-    // Create a more concise prompt
-    const summarizationPrompt = `Summarize this email in a playful, witty tone (max 100 words):
+    // Create the prompt for Cohere to generate summary
+    const summarizationPrompt = `You are an AI assistant that summarizes emails in a clear and engaging way. 
+Please analyze this email content and create a well-formatted summary that captures the key points.
 
-${plainTextBody}`;
+IMPORTANT: Your response should be valid HTML that can be directly inserted into a webpage.
+The summary should be wrapped in a <div class="summary"> tag with the following structure:
+
+<div class="summary">
+  <div class="summary-header">
+    <h3>📧 Email Summary</h3>
+  </div>
+  <div class="summary-content">
+    <p>[Your clear, well-structured summary here]</p>
+  </div>
+  <div class="summary-footer">
+    <span class="summary-meta">✨ TaskBox Team</span>
+  </div>
+</div>
+
+Guidelines for the summary:
+1. Focus on clarity and readability
+2. Use proper paragraph breaks for different points
+3. Highlight key information using <strong> tags where appropriate
+4. Use bullet points (<ul> and <li>) for lists of items
+5. Keep a professional but friendly tone
+6. Do not include any <html>, <head>, or <body> tags
+7. Maintain the exact HTML structure shown above
+
+Email Content:
+${textContent}`;
 
     console.log("Sending email to Cohere for summarization...");
-    const summaryResponse = await callCohereWithTimeout(summarizationPrompt, 0.7);
-    const summaryText = summaryResponse.content.toString().trim();
+    console.log("Prompt length:", summarizationPrompt.length);
     
-    console.log("Summary generated successfully. Length:", summaryText.length);
-    console.log("Summary preview:", summaryText.substring(0, 100) + "...");
+    const summaryResponse = await callCohereWithTimeout(summarizationPrompt, 0.7);
+    const summaryHtml = summaryResponse.content.toString().trim();
+    
+    console.log("Cohere Response Details:");
+    console.log("- Response length:", summaryHtml.length);
+    console.log("- Response preview:", summaryHtml.substring(0, 200));
+    console.log("- Contains summary div:", summaryHtml.includes('<div class="summary">'));
+    console.log("- Contains HTML tags:", /<[^>]+>/.test(summaryHtml));
     
     // Set response headers
     res.setHeader('Content-Type', 'application/json');
@@ -673,7 +730,7 @@ ${plainTextBody}`;
     // Return response based on returnHtml parameter
     if (returnHtml) {
       console.log("Generating HTML response...");
-      const htmlSummary = `
+      const fullHtml = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -686,39 +743,113 @@ ${plainTextBody}`;
       margin: 0;
       color: #333;
       line-height: 1.5;
+      background-color: #f8f9fa;
     }
     .summary {
-      background-color: #f8f9fa;
+      background: white;
       border-radius: 8px;
-      padding: 16px;
+      padding: 20px;
+      margin-bottom: 20px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.12);
     }
-    .summary p {
-      margin: 0 0 12px 0;
+    .summary-header {
+      border-bottom: 2px solid #f0f0f0;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+    }
+    .summary-header h3 {
+      margin: 0;
+      color: #2c3e50;
+      font-size: 1.2em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .summary-content {
+      color: #444;
+      font-size: 1.1em;
+      line-height: 1.6;
+    }
+    .summary-content p {
+      margin: 0 0 16px 0;
+    }
+    .summary-content ul {
+      margin: 0 0 16px 0;
+      padding-left: 24px;
+    }
+    .summary-content li {
+      margin-bottom: 8px;
+    }
+    .summary-content strong {
+      color: #2c3e50;
+    }
+    .summary-footer {
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid #f0f0f0;
+      font-size: 0.9em;
+      color: #666;
+    }
+    .summary-meta {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .original-content {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+    }
+    .original-content img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 4px;
+      margin: 8px 0;
     }
   </style>
 </head>
 <body>
-  <div class="summary">
-    <p>${summaryText.replace(/\n/g, '</p><p>')}</p>
+  ${summaryHtml}
+  <div class="original-content">
+    ${emailBody}
   </div>
 </body>
 </html>`;
-      console.log("HTML response generated. Length:", htmlSummary.length);
-      res.status(200).json({ 
-        summary: summaryText,
-        html: htmlSummary 
-      });
+      console.log("HTML response generated. Length:", fullHtml.length);
+      console.log("Full HTML preview:", fullHtml.substring(0, 200));
+      
+      const response = { 
+        summary: summaryHtml,
+        html: fullHtml,
+        originalHtml: emailBody
+      };
+      
+      console.log("API Response:", JSON.stringify(response, null, 2));
+      res.status(200).json(response);
     } else {
       console.log("Sending plain text response...");
-      res.status(200).json({ 
-        summary: summaryText
-      });
+      const response = { 
+        summary: summaryHtml,
+        originalHtml: emailBody
+      };
+      
+      console.log("API Response:", JSON.stringify(response, null, 2));
+      res.status(200).json(response);
     }
     
   } catch (error: any) {
     console.error("Error in /summarize-email endpoint:", error);
-    res.status(500).json({ error: 'Failed to summarize email' });
+    console.error("Error details:", {
+      message: error.message,
+      stack: error.stack,
+      response: error.response?.data
+    });
+    res.status(500).json({ 
+      error: 'Failed to summarize email',
+      details: error.message,
+      response: error.response?.data
+    });
   }
 });
 
@@ -1195,6 +1326,70 @@ Do not include any text outside of this JSON structure.`;
     res.status(500).json({ 
       error: 'Failed to generate email', 
       details: error.message || 'Unknown error' 
+    });
+  }
+});
+
+// --- Account Deletion Endpoint ---
+router.delete('/delete-account', async (req: Request, res: Response) => {
+  console.log("--- Reached DELETE /delete-account handler ---");
+  
+  try {
+    const { uid } = req.user; // Get user ID from authenticated request
+    
+    if (!uid) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    // 1. Delete user data from Firestore
+    const db = admin.firestore();
+    const userRef = db.collection('users').doc(uid);
+    
+    // Delete all user's tasks
+    const tasksSnapshot = await db.collection('tasks')
+      .where('userId', '==', uid)
+      .get();
+    
+    const batch = db.batch();
+    
+    // Add task deletions to batch
+    tasksSnapshot.forEach(doc => {
+      batch.delete(doc.ref);
+    });
+    
+    // Add user document deletion to batch
+    batch.delete(userRef);
+    
+    // Execute the batch
+    await batch.commit();
+    
+    // 2. Delete user from Firebase Auth
+    await admin.auth().deleteUser(uid);
+    
+    console.log(`Successfully deleted account for user ${uid}`);
+    
+    res.json({ 
+      message: 'Account and all associated data have been successfully deleted',
+      deletedData: {
+        user: true,
+        tasks: tasksSnapshot.size
+      }
+    });
+    
+  } catch (error: any) {
+    console.error("Error in /delete-account endpoint:", error);
+    
+    // Handle specific Firebase errors
+    if (error.code === 'auth/user-not-found') {
+      return res.status(404).json({ 
+        error: 'User not found',
+        details: error.message 
+      });
+    }
+    
+    res.status(500).json({ 
+      error: 'Failed to delete account',
+      details: error.message || 'Unknown error'
     });
   }
 });

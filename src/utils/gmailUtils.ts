@@ -16,13 +16,18 @@ export const createGmailTools = (accessToken: string): StructuredTool[] => {
   
   // Instantiate tools, passing accessToken via credentials parameter
   const getThreadTool = new GmailGetThread({
-    credentials: { accessToken: accessToken },
-    // scopes: ["https://mail.google.com/"] // Scopes might not be needed with accessToken
+    credentials: {
+      clientEmail: "user",
+      privateKey: accessToken
+    }
   });
 
   // Instantiate GmailSearch (removed maxResults from constructor)
   const searchTool = new GmailSearch({ 
-    credentials: { accessToken: accessToken },
+    credentials: {
+      clientEmail: "user",
+      privateKey: accessToken
+    }
   });
 
   // Add other tools as needed:

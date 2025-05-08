@@ -18,14 +18,13 @@ export const runGmailAgent = async (input: string, tools: StructuredTool[]) => {
 
   // Configure ChatOpenAI for OpenRouter with GPT-4o and strict maxTokens
   const llm = new ChatOpenAI({
-    apiKey: process.env.OPENROUTER_API_KEY,
     modelName: "google/gemini-2.0-flash-exp:free",
     temperature: 0,
     maxTokens: 2000,
     configuration: {
       baseURL: "https://openrouter.ai/api/v1",
+      apiKey: process.env.OPENROUTER_API_KEY,
       defaultHeaders: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "HTTP-Referer": process.env.YOUR_SITE_URL || "http://localhost:3001",
         "X-Title": process.env.YOUR_SITE_NAME || "TaskBox AI Agent",
       },
