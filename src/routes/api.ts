@@ -711,7 +711,7 @@ The summary should be wrapped in a <div class="summary"> tag with the following 
     <p>[Your clear, well-structured summary here]</p>
   </div>
   <div class="summary-footer">
-    <span class="summary-meta">✨ TaskBox Team</span>
+    <span class="summary-meta">✨ Plexar Team</span>
   </div>
 </div>
 

@@ -1,4 +1,4 @@
-# TaskBox Backend - Zod Schema Organization
+# Plexar Backend - Zod Schema Organization
 
 This Node.js backend application demonstrates best practices for organizing and structuring Zod schemas in a TypeScript project. It provides a structured approach to schema management, validation, and type safety.
 

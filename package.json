@@ -1,7 +1,7 @@
 {
-  "name": "taskbox-backend",
+  "name": "Plexar-backend",
   "version": "1.0.0",
-  "description": "Backend API for TaskBox application",
+  "description": "Backend API for Plexar application",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",

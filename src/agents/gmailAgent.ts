@@ -26,7 +26,7 @@ export const runGmailAgent = async (input: string, tools: StructuredTool[]) => {
       apiKey: process.env.OPENROUTER_API_KEY,
       defaultHeaders: {
         "HTTP-Referer": process.env.YOUR_SITE_URL || "http://localhost:3001",
-        "X-Title": process.env.YOUR_SITE_NAME || "TaskBox AI Agent",
+        "X-Title": process.env.YOUR_SITE_NAME || "Plexar AI Agent",
       },
     },
   });
